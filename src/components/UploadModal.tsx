@@ -34,7 +34,7 @@ interface UploadModalProps {
     category: string;
     tags: string[];
     description: string;
-  }) => Promise<void>;
+  }, rawBase64?: string) => Promise<void>;
 }
 
 // Preset samples with real media URLs
@@ -118,6 +118,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onUpl
   const [validationError, setValidationError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [selectedLocalFile, setSelectedLocalFile] = useState<File | null>(null);
+  const [rawBase64Content, setRawBase64Content] = useState<string>('');
 
   const handleLocalFileSelect = async (file: File) => {
     setSelectedLocalFile(file);
@@ -128,65 +129,9 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onUpl
     setFileSize(file.size);
     setValidationError(null);
 
-    const tempId = `temp_${Date.now()}`;
-    registerLocalFileBlob(tempId, file);
-
-    // 1. Process Photo
-    if (inferred === 'photo') {
-      setStatusMessage('Mengompresi & menyiapkan foto...');
-      try {
-        const compressedDataUrl = await processLocalPhoto(file);
-        setFileUrl(compressedDataUrl);
-      } catch (err) {
-        console.warn('Photo processing fallback:', err);
-        const dataUrl = await readDocumentDataUrl(file);
-        setFileUrl(dataUrl);
-      } finally {
-        setStatusMessage(null);
-      }
-    }
-    // 2. Process Video
-    else if (inferred === 'video') {
-      setStatusMessage('Menyiapkan file video untuk diputar di semua perangkat...');
-      try {
-        const fileKey = `video_${Date.now()}_${file.name.replace(/[^a-zA-Z0-9]/g, '_')}`;
-        await saveLocalVideoToIndexedDb(fileKey, file);
-        const objectUrl = registerLocalFileBlob(fileKey, file);
-
-        // If file is < 600KB, embed Data URL so it replicates to all devices via Firestore
-        if (file.size < 600000) {
-          const dataUrl = await readDocumentDataUrl(file);
-          setFileUrl(`${dataUrl}#fileKey=${fileKey}`);
-        } else {
-          // For larger video files, set global sample stream URL for remote devices + local objectUrl for local playback
-          const sampleStreams = [
-            'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-            'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-            'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
-            'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
-          ];
-          const streamIdx = Math.abs(file.name.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % sampleStreams.length;
-          setFileUrl(`${sampleStreams[streamIdx]}#fileKey=${fileKey}`);
-        }
-      } catch (err) {
-        console.warn('Video Data URL processing notice:', err);
-        setFileUrl('https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4');
-      } finally {
-        setStatusMessage(null);
-      }
-    }
-    // 3. Process PDF & Office Documents
-    else {
-      setStatusMessage('Membaca dokumen...');
-      try {
-        const dataUrl = await readDocumentDataUrl(file);
-        setFileUrl(dataUrl);
-      } catch (err) {
-        console.warn('Document processing notice:', err);
-      } finally {
-        setStatusMessage(null);
-      }
-    }
+    // Create a lightweight local object URL for instant, zero-copy preview in the local UI
+    const objectUrl = URL.createObjectURL(file);
+    setFileUrl(objectUrl);
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -224,25 +169,50 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onUpl
       return;
     }
 
-    let finalUrl = fileUrl.trim();
-    if (!finalUrl) {
-      if (fileType === 'photo') {
-        finalUrl = 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=1200&auto=format&fit=crop&q=80';
-      } else if (fileType === 'video') {
-        finalUrl = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
-      } else {
-        finalUrl = 'https://images.unsplash.com/photo-1586281380349-632531db7ed4?w=1200&auto=format&fit=crop&q=80';
-      }
-    }
-
-    const tagsList = tagsInput
-      .split(',')
-      .map((t) => t.trim())
-      .filter((t) => t.length > 0);
-
     setIsUploading(true);
-    setStatusMessage('Menyimpan ke PUTREK FILE Vault...');
+    setStatusMessage('Menghubungkan ke server PUTREK FILE...');
+
+    let finalUrl = fileUrl.trim();
+
     try {
+      if (selectedLocalFile) {
+        setStatusMessage(`Mengunggah "${fileName}" ke Server (Kapasitas Maksimal 5 GB)...`);
+        
+        const formData = new FormData();
+        formData.append('file', selectedLocalFile);
+
+        const response = await fetch('/api/upload', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) {
+          throw new Error(`Unggah file gagal. Server merespon dengan status: ${response.status}`);
+        }
+
+        const resData = await response.json();
+        if (!resData.success || !resData.url) {
+          throw new Error(resData.error || 'Server tidak mengembalikan URL file.');
+        }
+
+        finalUrl = resData.url;
+      } else if (!finalUrl) {
+        if (fileType === 'photo') {
+          finalUrl = 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=1200&auto=format&fit=crop&q=80';
+        } else if (fileType === 'video') {
+          finalUrl = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
+        } else {
+          finalUrl = 'https://images.unsplash.com/photo-1586281380349-632531db7ed4?w=1200&auto=format&fit=crop&q=80';
+        }
+      }
+
+      const tagsList = tagsInput
+        .split(',')
+        .map((t) => t.trim())
+        .filter((t) => t.length > 0);
+
+      setStatusMessage('Menyimpan metadata & mempublikasikan ke semua perangkat...');
+
       await onUploadSuccess({
         name: fileName.trim(),
         type: fileType,
@@ -253,9 +223,11 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onUpl
         tags: tagsList,
         description: description.trim(),
       });
+      
       onClose();
     } catch (err) {
-      setValidationError(err instanceof Error ? err.message : 'Gagal menyimpan file.');
+      console.error('Error uploading file:', err);
+      setValidationError(err instanceof Error ? err.message : 'Gagal mengunggah file.');
     } finally {
       setIsUploading(false);
       setStatusMessage(null);

@@ -8,6 +8,8 @@ import {
   query,
   getDocs,
   writeBatch,
+  setDoc,
+  where,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './firebase';
 import { FileItem, FileType, StorageStats } from '../types/storage';
@@ -310,4 +312,95 @@ export function calculateStats(files: FileItem[]): StorageStats {
     otherBytes,
     trashCount: trashFiles.length,
   };
+}
+
+/**
+ * Add a file item and its large Base64 content split in chunks
+ */
+export async function addFileItemChunked(
+  data: Omit<FileItem, 'id' | 'createdAt' | 'updatedAt'>,
+  rawBase64: string
+): Promise<string> {
+  const validation = validateFileInput({
+    name: data.name,
+    size: data.size,
+    category: data.category,
+    description: data.description,
+  });
+
+  if (!validation.isValid) {
+    throw new Error(validation.error || 'Validasi input file gagal.');
+  }
+
+  const now = new Date().toISOString();
+  
+  // Create a placeholder ID
+  const tempId = `file_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+  
+  // Split Base64 string into chunks of 600KB
+  const chunkSize = 600000;
+  const chunksCount = Math.ceil(rawBase64.length / chunkSize);
+  
+  // Write chunks to Firestore
+  const batch = writeBatch(db);
+  for (let idx = 0; idx < chunksCount; idx++) {
+    const start = idx * chunkSize;
+    const end = Math.min(start + chunkSize, rawBase64.length);
+    const chunkData = rawBase64.substring(start, end);
+    
+    const chunkRef = doc(collection(db, 'fileChunks'));
+    batch.set(chunkRef, {
+      fileId: tempId,
+      index: idx,
+      data: chunkData,
+      createdAt: now,
+    });
+  }
+  await batch.commit();
+
+  const payload = {
+    name: data.name.trim(),
+    type: data.type,
+    mimeType: data.mimeType,
+    size: data.size,
+    url: `chunked:${tempId}`, // main url points to the chunks
+    category: data.category || 'Lainnya',
+    tags: data.tags || [],
+    description: (data.description || '').trim(),
+    isFavorite: Boolean(data.isFavorite),
+    inTrash: false,
+    ownerId: data.ownerId,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  try {
+    const docRef = doc(db, FILES_COLLECTION, tempId);
+    await setDoc(docRef, payload);
+    return tempId;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, FILES_COLLECTION);
+    throw error;
+  }
+}
+
+/**
+ * Retrieve and reconstruct all chunks for a file
+ */
+export async function getFileFromChunks(fileId: string): Promise<string> {
+  try {
+    const q = query(
+      collection(db, 'fileChunks'),
+      where('fileId', '==', fileId)
+    );
+    const snapshot = await getDocs(q);
+    const sortedDocs = snapshot.docs
+      .map((d) => d.data() as { index: number; data: string })
+      .sort((a, b) => a.index - b.index);
+      
+    return sortedDocs.map((d) => d.data).join('');
+  } catch (error) {
+    console.error('Error fetching file chunks:', error);
+    throw error;
+  }
 }

@@ -60,7 +60,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [rotation, setRotate] = useState<number>(0);
   const [fitMode, setFitMode] = useState<'contain' | 'cover'>('contain');
-  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(true);
 
   // Video State & Controls
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -129,6 +129,12 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
         }
       }
 
+      // 3.5 Direct Express server upload path
+      if (cleanUrl && (cleanUrl.startsWith('/uploads/') || cleanUrl.includes('/uploads/'))) {
+        if (active) setResolvedVideoUrl(cleanUrl);
+        return;
+      }
+
       // 4. Direct Blob URL or HTTP video URL
       if (
         cleanUrl &&
@@ -170,7 +176,8 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   }, [isPpt, totalSlides]);
 
   const handleCopyLink = () => {
-    navigator.clipboard.writeText(file.url || window.location.href);
+    const fullShareUrl = file.url.startsWith('/') ? `${window.location.origin}${file.url}` : file.url;
+    navigator.clipboard.writeText(fullShareUrl || window.location.href);
     setCopied(true);
     onShowToast('Tautan Disalin!', 'Tautan akses file telah disalin ke clipboard.', 'success');
     setTimeout(() => setCopied(false), 2000);
@@ -498,7 +505,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                   />
                 ) : (
                   <iframe
-                    src={`https://docs.google.com/viewer?url=${encodeURIComponent(file.url)}&embedded=true`}
+                    src={`https://docs.google.com/viewer?url=${encodeURIComponent(file.url.startsWith('/') ? window.location.origin + file.url : file.url)}&embedded=true`}
                     className="w-full h-full rounded-xl bg-white"
                     title={`PDF Viewer - ${file.name}`}
                   />
