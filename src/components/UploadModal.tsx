@@ -156,7 +156,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onUpl
         // If file is < 600KB, embed Data URL so it replicates to all devices via Firestore
         if (file.size < 600000) {
           const dataUrl = await readDocumentDataUrl(file);
-          setFileUrl(dataUrl);
+          setFileUrl(`${dataUrl}#fileKey=${fileKey}`);
         } else {
           // For larger video files, set global sample stream URL for remote devices + local objectUrl for local playback
           const sampleStreams = [
@@ -166,7 +166,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onUpl
             'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
           ];
           const streamIdx = Math.abs(file.name.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % sampleStreams.length;
-          setFileUrl(sampleStreams[streamIdx]);
+          setFileUrl(`${sampleStreams[streamIdx]}#fileKey=${fileKey}`);
         }
       } catch (err) {
         console.warn('Video Data URL processing notice:', err);

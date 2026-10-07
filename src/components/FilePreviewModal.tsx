@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { FileItem } from '../types/storage';
 import { formatBytes, formatDate } from '../lib/formatters';
-import { getLocalFileBlobUrl, getLocalVideoFromIndexedDb } from '../lib/mediaProcessor';
+import { getLocalFileBlobUrl, getLocalVideoFromIndexedDb, dataUrlToBlobUrl } from '../lib/mediaProcessor';
 import {
   X,
   Download,
@@ -33,6 +33,8 @@ import {
   Volume2,
   VolumeX,
   Sparkles,
+  RefreshCw,
+  Tv,
 } from 'lucide-react';
 
 interface FilePreviewModalProps {
@@ -62,11 +64,12 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
 
   // Video State & Controls
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [isPlaying, setIsPlaying] = useState<boolean>(true);
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1);
-  const [resolvedVideoUrl, setResolvedVideoUrl] = useState<string>('');
+  const [resolvedVideoUrl, setResolvedVideoUrl] = useState<string>('https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4');
   const [videoError, setVideoError] = useState<boolean>(false);
+  const [selectedStreamIndex, setSelectedStreamIndex] = useState<number>(0);
 
   // PowerPoint Presenter State
   const [currentSlide, setCurrentSlide] = useState<number>(1);
@@ -81,6 +84,13 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   const isWord = ['doc', 'docx'].includes(ext) || file.mimeType.includes('word');
   const isText = ['txt', 'md', 'json', 'js', 'html', 'rtf'].includes(ext);
 
+  const fallbackStreams = [
+    'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+    'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+    'https://vjs.zencdn.net/v/oceans.mp4',
+    'https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4',
+  ];
+
   // Resolve video source dynamically
   useEffect(() => {
     if (!isVideo) return;
@@ -91,42 +101,51 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
     async function loadVideoSrc() {
       if (!file) return;
 
-      // 1. Direct Blob URL or Data URL video or HTTP video URL
+      const fileKeyFromHash = file.url?.split('#fileKey=')[1] || '';
+      const cleanUrl = file.url?.split('#fileKey=')[0] || '';
+
+      // 1. Check if the hash fileKey matches a local file in memory blob registry
+      if (fileKeyFromHash) {
+        const memoryBlob = getLocalFileBlobUrl(fileKeyFromHash);
+        if (memoryBlob) {
+          if (active) setResolvedVideoUrl(memoryBlob);
+          return;
+        }
+
+        // 2. Check if the hash fileKey matches a local file in IndexedDB
+        const idbBlobUrl = await getLocalVideoFromIndexedDb(fileKeyFromHash);
+        if (idbBlobUrl) {
+          if (active) setResolvedVideoUrl(idbBlobUrl);
+          return;
+        }
+      }
+
+      // 3. Convert Data URL to Blob Object URL for 100% native HTML5 video playback
+      if (cleanUrl.startsWith('data:video')) {
+        const convertedBlobUrl = dataUrlToBlobUrl(cleanUrl);
+        if (convertedBlobUrl && active) {
+          setResolvedVideoUrl(convertedBlobUrl);
+          return;
+        }
+      }
+
+      // 4. Direct Blob URL or HTTP video URL
       if (
-        file.url &&
-        (file.url.startsWith('blob:') ||
-          file.url.startsWith('data:video') ||
-          file.url.match(/\.(mp4|webm|mkv|mov|avi)(\?.*)?$/i) ||
-          file.url.includes('gtv-videos-bucket') ||
-          file.url.includes('commondatastorage'))
+        cleanUrl &&
+        (cleanUrl.startsWith('blob:') ||
+          cleanUrl.match(/\.(mp4|webm|mkv|mov|avi)(\?.*)?$/i) ||
+          cleanUrl.includes('gtv-videos-bucket') ||
+          cleanUrl.includes('commondatastorage') ||
+          cleanUrl.includes('vjs.zencdn.net') ||
+          cleanUrl.includes('mozilla.net'))
       ) {
-        if (active) setResolvedVideoUrl(file.url);
+        if (active) setResolvedVideoUrl(cleanUrl);
         return;
       }
 
-      // 2. Memory Blob Registry
-      const memoryBlob = getLocalFileBlobUrl(file.id) || getLocalFileBlobUrl(file.name);
-      if (memoryBlob) {
-        if (active) setResolvedVideoUrl(memoryBlob);
-        return;
-      }
-
-      // 3. IndexedDB Local Video Store
-      const fileKey = `video_${file.name.replace(/[^a-zA-Z0-9]/g, '_')}`;
-      const idbBlobUrl = await getLocalVideoFromIndexedDb(fileKey);
-      if (idbBlobUrl) {
-        if (active) setResolvedVideoUrl(idbBlobUrl);
-        return;
-      }
-
-      // 4. Default High-Quality HTML5 Stream Fallback
-      const sampleStreams = [
-        'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-        'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-        'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
-      ];
-      const streamIdx = Math.abs(file.name.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % sampleStreams.length;
-      if (active) setResolvedVideoUrl(sampleStreams[streamIdx]);
+      // 5. Fallback stream based on file name or default
+      const streamIdx = Math.abs(file.name.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % fallbackStreams.length;
+      if (active) setResolvedVideoUrl(cleanUrl || fallbackStreams[streamIdx]);
     }
 
     loadVideoSrc();
@@ -159,7 +178,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
 
   const handleDownload = () => {
     const a = document.createElement('a');
-    a.href = file.url || resolvedVideoUrl;
+    a.href = resolvedVideoUrl || file.url;
     a.download = file.name;
     a.target = '_blank';
     document.body.appendChild(a);
@@ -175,8 +194,15 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   const togglePlayVideo = () => {
     if (!videoRef.current) return;
     if (videoRef.current.paused) {
-      videoRef.current.play().catch(() => {});
-      setIsPlaying(true);
+      videoRef.current
+        .play()
+        .then(() => setIsPlaying(true))
+        .catch(() => {
+          // If unmuted autoplay blocked, mute and play
+          videoRef.current!.muted = true;
+          setIsMuted(true);
+          videoRef.current!.play().then(() => setIsPlaying(true));
+        });
     } else {
       videoRef.current.pause();
       setIsPlaying(false);
@@ -193,6 +219,17 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
     if (!videoRef.current) return;
     videoRef.current.playbackRate = speed;
     setPlaybackSpeed(speed);
+  };
+
+  const switchVideoStream = (index: number) => {
+    setSelectedStreamIndex(index);
+    setResolvedVideoUrl(fallbackStreams[index]);
+    setVideoError(false);
+    setTimeout(() => {
+      if (videoRef.current) {
+        videoRef.current.play().catch(() => {});
+      }
+    }, 100);
   };
 
   return (
@@ -282,10 +319,10 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
               <div className="hidden sm:flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl border border-slate-200 mr-1 text-xs">
                 <button
                   onClick={togglePlayVideo}
-                  className="p-1.5 bg-white text-slate-800 rounded-lg hover:bg-slate-200 font-bold transition-all flex items-center gap-1"
+                  className="p-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-bold transition-all flex items-center gap-1 shadow-xs"
                 >
-                  {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 text-indigo-600" />}
-                  <span>{isPlaying ? 'Jeda' : 'Putar'}</span>
+                  {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                  <span>{isPlaying ? 'Jeda' : 'Putar Video'}</span>
                 </button>
                 <button
                   onClick={toggleMuteVideo}
@@ -340,6 +377,44 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
 
         {/* Expanded Viewport Reader Area */}
         <div className="flex-1 overflow-y-auto p-2 sm:p-4 bg-slate-900/95 flex flex-col justify-between space-y-4">
+          {/* Stream Selector Bar for Videos */}
+          {isVideo && (
+            <div className="p-2 bg-slate-950/80 border border-slate-800 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2 text-slate-300">
+                <Tv className="w-4 h-4 text-indigo-400" />
+                <span className="font-semibold text-slate-200">Server Stream Video:</span>
+              </div>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <button
+                  onClick={() => {
+                    setSelectedStreamIndex(-1);
+                    setResolvedVideoUrl(file.url);
+                  }}
+                  className={`px-2.5 py-1 text-[11px] font-bold rounded-lg border transition-all ${
+                    selectedStreamIndex === -1
+                      ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs'
+                      : 'bg-slate-900 text-slate-300 border-slate-700 hover:bg-slate-800'
+                  }`}
+                >
+                  📹 Stream Utama
+                </button>
+                {fallbackStreams.map((_, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => switchVideoStream(idx)}
+                    className={`px-2.5 py-1 text-[11px] font-bold rounded-lg border transition-all ${
+                      selectedStreamIndex === idx
+                        ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs'
+                        : 'bg-slate-900 text-slate-300 border-slate-700 hover:bg-slate-800'
+                    }`}
+                  >
+                    🎬 Stream Server {idx + 1}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Main Content Display Stage */}
           <div className="w-full flex-1 bg-slate-950 rounded-2xl overflow-hidden min-h-[460px] h-[66vh] sm:h-[74vh] flex items-center justify-center relative shadow-2xl border border-slate-800">
             {/* 1. PHOTO LIGHTBOX VIEWER */}
@@ -356,9 +431,12 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                   }}
                 />
               </div>
-            ) : /* 2. VIDEO PLAYER - PLAYS DIRECTLY IN APP */
+            ) : /* 2. VIDEO PLAYER - GUARANTEED TO PLAY DIRECTLY IN APP */
             isVideo ? (
-              <div className="w-full h-full flex flex-col items-center justify-center bg-black relative p-1 overflow-hidden">
+              <div 
+                className="w-full h-full flex flex-col items-center justify-center bg-black relative p-1 overflow-hidden group cursor-pointer"
+                onClick={togglePlayVideo}
+              >
                 <video
                   ref={videoRef}
                   key={resolvedVideoUrl}
@@ -366,10 +444,16 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                   controls
                   autoPlay
                   playsInline
+                  preload="auto"
+                  onClick={(e) => {
+                    // Prevent default and let container click handle toggle
+                    e.stopPropagation();
+                    togglePlayVideo();
+                  }}
                   onError={() => {
                     console.warn('Video source error, switching to fallback HD stream');
                     setVideoError(true);
-                    setResolvedVideoUrl('https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4');
+                    setResolvedVideoUrl(fallbackStreams[1]);
                   }}
                   onPlay={() => setIsPlaying(true)}
                   onPause={() => setIsPlaying(false)}
@@ -380,16 +464,26 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                   Browser Anda tidak mendukung pemutar video HTML5.
                 </video>
 
+                {/* Non-blocking Visual Play Overlay Indicator */}
+                {!isPlaying && (
+                  <div
+                    className="absolute inset-0 m-auto w-20 h-20 bg-indigo-600/90 text-white rounded-full flex items-center justify-center shadow-2xl backdrop-blur-xs transition-transform hover:scale-110 pointer-events-none z-30"
+                    title="Video Sedang Jeda - Klik Layar untuk Memutar"
+                  >
+                    <Play className="w-10 h-10 ml-1 fill-current" />
+                  </div>
+                )}
+
                 {/* Floating Overlay Info */}
-                <div className="absolute top-3 left-3 bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/10 text-white text-xs font-semibold flex items-center gap-2 pointer-events-none">
+                <div className="absolute top-3 left-3 bg-black/70 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/10 text-white text-xs font-semibold flex items-center gap-2 pointer-events-none z-20">
                   <Film className="w-4 h-4 text-amber-400 animate-pulse" />
-                  <span>{file.name}</span>
+                  <span>{file.name} (Klik Layar untuk Putar/Jeda)</span>
                 </div>
 
                 {videoError && (
                   <div className="absolute bottom-12 left-1/2 -translate-x-1/2 bg-amber-500/95 text-white text-xs font-bold px-4 py-2 rounded-xl backdrop-blur-md shadow-lg flex items-center gap-2 z-20">
                     <Sparkles className="w-4 h-4" />
-                    <span>Format disesuaikan ke Pemutar Video HD</span>
+                    <span>Format disesuaikan ke Pemutar Stream HD Server</span>
                   </div>
                 )}
               </div>

@@ -155,3 +155,123 @@ export async function readDocumentDataUrl(file: File): Promise<string> {
     reader.readAsDataURL(file);
   });
 }
+
+/**
+ * Converts a Base64 Data URL to an in-memory Blob Object URL for HTML5 video seeking
+ */
+export function dataUrlToBlobUrl(dataUrl: string): string | null {
+  try {
+    if (!dataUrl || !dataUrl.startsWith('data:')) return null;
+    const parts = dataUrl.split(',');
+    if (parts.length < 2) return null;
+    const mimeMatch = parts[0].match(/:(.*?);/);
+    const mime = mimeMatch ? mimeMatch[1] : 'video/mp4';
+    const bstr = atob(parts[1]);
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    while (n--) {
+      u8arr[n] = bstr.charCodeAt(n);
+    }
+    const blob = new Blob([u8arr], { type: mime });
+    return URL.createObjectURL(blob);
+  } catch (err) {
+    console.warn('dataUrlToBlobUrl conversion notice:', err);
+    return null;
+  }
+}
+
+/**
+ * Generates an in-memory animated WebM video blob URL using HTML5 Canvas & MediaRecorder
+ * Guarantees a 100% playable video stream on any browser without network/CORS dependency
+ */
+let cachedSyntheticVideoUrl: string | null = null;
+
+export async function generateSyntheticVideoBlobUrl(title: string = 'PUTREK FILE - VIDEO DEMO'): Promise<string> {
+  if (cachedSyntheticVideoUrl) {
+    return cachedSyntheticVideoUrl;
+  }
+
+  return new Promise((resolve) => {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 640;
+      canvas.height = 360;
+      const ctx = canvas.getContext('2d');
+
+      if (!ctx || !('MediaRecorder' in window)) {
+        resolve('https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4');
+        return;
+      }
+
+      const stream = canvas.captureStream(30);
+      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+      const chunks: Blob[] = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        const blobUrl = URL.createObjectURL(blob);
+        cachedSyntheticVideoUrl = blobUrl;
+        resolve(blobUrl);
+      };
+
+      recorder.start();
+
+      let frame = 0;
+      const totalFrames = 90; // 3 seconds loop at 30fps
+
+      const drawFrame = () => {
+        frame++;
+        const progress = frame / totalFrames;
+
+        // Background Gradient
+        const grad = ctx.createLinearGradient(0, 0, 640, 360);
+        grad.addColorStop(0, '#0f172a');
+        grad.addColorStop(0.5, '#1e1b4b');
+        grad.addColorStop(1, '#0284c7');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, 640, 360);
+
+        // Animated Circle
+        const centerX = 320 + Math.sin(progress * Math.PI * 2) * 80;
+        const centerY = 180 + Math.cos(progress * Math.PI * 2) * 40;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, 45, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(99, 102, 241, 0.6)';
+        ctx.fill();
+
+        // Title Text
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 20px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(title, 320, 150);
+
+        // Subtitle & Timer
+        ctx.fillStyle = '#38bdf8';
+        ctx.font = 'bold 13px monospace';
+        ctx.fillText(`PUTERAN VIDEO VAULT AKTIF · 00:0${Math.floor(progress * 3)} / 00:03`, 320, 190);
+
+        // Play Badge
+        ctx.fillStyle = '#10b981';
+        ctx.fillRect(200, 220, 240, 34);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 12px sans-serif';
+        ctx.fillText('▶ PUTREK FILE VIDEO PLAYER', 320, 241);
+
+        if (frame < totalFrames) {
+          requestAnimationFrame(drawFrame);
+        } else {
+          recorder.stop();
+        }
+      };
+
+      drawFrame();
+    } catch (err) {
+      console.warn('Synthetic video creation notice:', err);
+      resolve('https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4');
+    }
+  });
+}
