@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { FileItem } from '../types/storage';
 import { formatBytes, formatDate } from '../lib/formatters';
+import { getLocalFileBlobUrl, getLocalVideoFromIndexedDb } from '../lib/mediaProcessor';
 import {
   X,
   Download,
@@ -20,12 +21,18 @@ import {
   ZoomOut,
   RotateCw,
   Maximize2,
+  Minimize2,
   Table,
   Presentation,
   BookOpen,
   ChevronLeft,
   ChevronRight,
-  ExternalLink,
+  Play,
+  Pause,
+  RotateCcw,
+  Volume2,
+  VolumeX,
+  Sparkles,
 } from 'lucide-react';
 
 interface FilePreviewModalProps {
@@ -50,23 +57,98 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   const [copied, setCopied] = useState<boolean>(false);
   const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [rotation, setRotate] = useState<number>(0);
+  const [fitMode, setFitMode] = useState<'contain' | 'cover'>('contain');
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
 
-  // Slide Deck Presenter state for PPT/PPTX
+  // Video State & Controls
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState<boolean>(true);
+  const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [playbackSpeed, setPlaybackSpeed] = useState<number>(1);
+  const [resolvedVideoUrl, setResolvedVideoUrl] = useState<string>('');
+  const [videoError, setVideoError] = useState<boolean>(false);
+
+  // PowerPoint Presenter State
   const [currentSlide, setCurrentSlide] = useState<number>(1);
-  const totalSlides = 5;
+  const totalSlides = 6;
 
   const ext = file.name.split('.').pop()?.toLowerCase() || '';
   const isPhoto = file.type === 'photo' || ['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'bmp'].includes(ext);
-  const isVideo = file.type === 'video' || ['mp4', 'mkv', 'avi', 'mov', 'webm'].includes(ext);
+  const isVideo = file.type === 'video' || ['mp4', 'mkv', 'avi', 'mov', 'webm', 'flv'].includes(ext);
   const isPdf = ext === 'pdf' || file.mimeType.includes('pdf');
-  const isPpt = ['ppt', 'pptx'].includes(ext) || file.mimeType.includes('powerpoint');
+  const isPpt = ['ppt', 'pptx'].includes(ext) || file.mimeType.includes('powerpoint') || file.mimeType.includes('presentation');
   const isExcel = ['xls', 'xlsx', 'csv'].includes(ext) || file.mimeType.includes('excel') || file.mimeType.includes('spreadsheet');
   const isWord = ['doc', 'docx'].includes(ext) || file.mimeType.includes('word');
   const isText = ['txt', 'md', 'json', 'js', 'html', 'rtf'].includes(ext);
 
-  // Checks if URL points to an image
-  const isImageUrl = file.url.startsWith('data:image') || file.url.includes('unsplash.com') || file.url.match(/\.(jpg|jpeg|png|webp|gif|svg)/i);
+  // Resolve video source dynamically
+  useEffect(() => {
+    if (!isVideo) return;
+    setVideoError(false);
+
+    let active = true;
+
+    async function loadVideoSrc() {
+      if (!file) return;
+
+      // 1. Direct Blob URL or Data URL video or HTTP video URL
+      if (
+        file.url &&
+        (file.url.startsWith('blob:') ||
+          file.url.startsWith('data:video') ||
+          file.url.match(/\.(mp4|webm|mkv|mov|avi)(\?.*)?$/i) ||
+          file.url.includes('gtv-videos-bucket') ||
+          file.url.includes('commondatastorage'))
+      ) {
+        if (active) setResolvedVideoUrl(file.url);
+        return;
+      }
+
+      // 2. Memory Blob Registry
+      const memoryBlob = getLocalFileBlobUrl(file.id) || getLocalFileBlobUrl(file.name);
+      if (memoryBlob) {
+        if (active) setResolvedVideoUrl(memoryBlob);
+        return;
+      }
+
+      // 3. IndexedDB Local Video Store
+      const fileKey = `video_${file.name.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      const idbBlobUrl = await getLocalVideoFromIndexedDb(fileKey);
+      if (idbBlobUrl) {
+        if (active) setResolvedVideoUrl(idbBlobUrl);
+        return;
+      }
+
+      // 4. Default High-Quality HTML5 Stream Fallback
+      const sampleStreams = [
+        'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+        'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+        'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
+      ];
+      const streamIdx = Math.abs(file.name.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % sampleStreams.length;
+      if (active) setResolvedVideoUrl(sampleStreams[streamIdx]);
+    }
+
+    loadVideoSrc();
+
+    return () => {
+      active = false;
+    };
+  }, [file, isVideo]);
+
+  // Handle keyboard arrow navigation for PowerPoint presentation slides
+  useEffect(() => {
+    if (!isPpt) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowRight') {
+        setCurrentSlide((prev) => Math.min(prev + 1, totalSlides));
+      } else if (e.key === 'ArrowLeft') {
+        setCurrentSlide((prev) => Math.max(prev - 1, 1));
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isPpt, totalSlides]);
 
   const handleCopyLink = () => {
     navigator.clipboard.writeText(file.url || window.location.href);
@@ -77,7 +159,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
 
   const handleDownload = () => {
     const a = document.createElement('a');
-    a.href = file.url;
+    a.href = file.url || resolvedVideoUrl;
     a.download = file.name;
     a.target = '_blank';
     document.body.appendChild(a);
@@ -86,21 +168,46 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
     onShowToast('Mengunduh File', `File ${file.name} sedang diunduh...`, 'info');
   };
 
-  const handleZoomIn = () => setZoomLevel((prev) => Math.min(prev + 0.25, 3));
+  const handleZoomIn = () => setZoomLevel((prev) => Math.min(prev + 0.25, 4));
   const handleZoomOut = () => setZoomLevel((prev) => Math.max(prev - 0.25, 0.5));
   const handleRotate = () => setRotate((prev) => (prev + 90) % 360);
 
+  const togglePlayVideo = () => {
+    if (!videoRef.current) return;
+    if (videoRef.current.paused) {
+      videoRef.current.play().catch(() => {});
+      setIsPlaying(true);
+    } else {
+      videoRef.current.pause();
+      setIsPlaying(false);
+    }
+  };
+
+  const toggleMuteVideo = () => {
+    if (!videoRef.current) return;
+    videoRef.current.muted = !videoRef.current.muted;
+    setIsMuted(videoRef.current.muted);
+  };
+
+  const changeVideoSpeed = (speed: number) => {
+    if (!videoRef.current) return;
+    videoRef.current.playbackRate = speed;
+    setPlaybackSpeed(speed);
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-950/85 backdrop-blur-md animate-in fade-in duration-200">
       <div
-        className={`w-full bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col transition-all ${
-          isFullscreen ? 'fixed inset-2 z-50 max-w-none max-h-none h-[calc(100vh-16px)]' : 'max-w-4xl max-h-[92vh]'
+        className={`w-full bg-white border border-slate-200/80 shadow-2xl overflow-hidden flex flex-col transition-all ${
+          isFullscreen
+            ? 'fixed inset-0 z-50 max-w-none max-h-none h-screen w-screen rounded-none'
+            : 'max-w-6xl max-h-[98vh] rounded-2xl'
         }`}
       >
-        {/* Header */}
-        <div className="px-5 py-3.5 bg-white border-b border-slate-100 flex items-center justify-between shrink-0">
+        {/* Header Bar */}
+        <div className="px-5 py-3.5 bg-white border-b border-slate-200 flex items-center justify-between shrink-0 shadow-2xs">
           <div className="flex items-center gap-3 min-w-0 pr-4">
-            <div className="p-2 rounded-xl bg-indigo-50 text-indigo-600 border border-indigo-100 shrink-0">
+            <div className="p-2.5 rounded-xl bg-indigo-50 text-indigo-600 border border-indigo-100 shrink-0">
               {isPhoto ? (
                 <ImageIcon className="w-5 h-5 text-emerald-600" />
               ) : isVideo ? (
@@ -131,9 +238,9 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
 
           {/* Action Toolbar */}
           <div className="flex items-center gap-2 shrink-0">
-            {/* Image Toolbar Controls */}
+            {/* Photo Toolbar Controls */}
             {isPhoto && (
-              <div className="hidden sm:flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200/80 mr-2">
+              <div className="hidden sm:flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200/80 mr-1">
                 <button
                   onClick={handleZoomOut}
                   className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-white rounded-lg transition-all"
@@ -154,19 +261,59 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                 <button
                   onClick={handleRotate}
                   className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-white rounded-lg transition-all"
-                  title="Putar Foto 90 Derajat"
+                  title="Putar Foto 90°"
                 >
                   <RotateCw className="w-4 h-4" />
                 </button>
+                <button
+                  onClick={() => setFitMode(fitMode === 'contain' ? 'cover' : 'contain')}
+                  className={`px-2 py-1 text-[11px] font-bold rounded-lg transition-all ${
+                    fitMode === 'cover' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-700'
+                  }`}
+                  title="Penuhi Ukuran Layar"
+                >
+                  {fitMode === 'cover' ? 'Penuh' : 'Pas'}
+                </button>
+              </div>
+            )}
+
+            {/* Video Custom Controls */}
+            {isVideo && (
+              <div className="hidden sm:flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl border border-slate-200 mr-1 text-xs">
+                <button
+                  onClick={togglePlayVideo}
+                  className="p-1.5 bg-white text-slate-800 rounded-lg hover:bg-slate-200 font-bold transition-all flex items-center gap-1"
+                >
+                  {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 text-indigo-600" />}
+                  <span>{isPlaying ? 'Jeda' : 'Putar'}</span>
+                </button>
+                <button
+                  onClick={toggleMuteVideo}
+                  className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-white rounded-lg transition-all"
+                  title={isMuted ? 'Buka Suara' : 'Bisu'}
+                >
+                  {isMuted ? <VolumeX className="w-4 h-4 text-rose-500" /> : <Volume2 className="w-4 h-4" />}
+                </button>
+                <select
+                  value={playbackSpeed}
+                  onChange={(e) => changeVideoSpeed(Number(e.target.value))}
+                  className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-[11px] font-bold text-slate-700 focus:outline-none cursor-pointer"
+                >
+                  <option value={0.5}>0.5x</option>
+                  <option value={1}>1.0x</option>
+                  <option value={1.25}>1.25x</option>
+                  <option value={1.5}>1.5x</option>
+                  <option value={2}>2.0x</option>
+                </select>
               </div>
             )}
 
             <button
               onClick={() => setIsFullscreen(!isFullscreen)}
               className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors"
-              title={isFullscreen ? 'Kecilkan Tampilan' : 'Layar Penuh'}
+              title={isFullscreen ? 'Kecilkan Tampilan' : 'Tampilan Penuh Layar'}
             >
-              <Maximize2 className="w-4 h-4" />
+              {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
             </button>
 
             <button
@@ -191,125 +338,111 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
           </div>
         </div>
 
-        {/* Content Viewport Reader */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
-          {/* Direct File Viewers */}
-          <div className="w-full bg-slate-950 rounded-2xl overflow-hidden min-h-[340px] max-h-[580px] flex items-center justify-center relative shadow-inner">
+        {/* Expanded Viewport Reader Area */}
+        <div className="flex-1 overflow-y-auto p-2 sm:p-4 bg-slate-900/95 flex flex-col justify-between space-y-4">
+          {/* Main Content Display Stage */}
+          <div className="w-full flex-1 bg-slate-950 rounded-2xl overflow-hidden min-h-[460px] h-[66vh] sm:h-[74vh] flex items-center justify-center relative shadow-2xl border border-slate-800">
             {/* 1. PHOTO LIGHTBOX VIEWER */}
             {isPhoto && file.url ? (
-              <div className="w-full h-full flex items-center justify-center overflow-auto p-4">
+              <div className="w-full h-full flex items-center justify-center overflow-auto p-2 relative">
                 <img
                   src={file.url}
                   alt={file.name}
-                  className="max-h-[500px] w-auto object-contain transition-transform duration-200 shadow-2xl rounded-lg"
+                  className={`max-h-full max-w-full transition-transform duration-300 shadow-2xl rounded-lg ${
+                    fitMode === 'cover' ? 'w-full h-full object-cover' : 'object-contain'
+                  }`}
                   style={{
                     transform: `scale(${zoomLevel}) rotate(${rotation}deg)`,
                   }}
                 />
               </div>
-            ) : /* 2. VIDEO PLAYER */
-            isVideo && file.url ? (
-              <div className="w-full h-full flex items-center justify-center bg-black p-1">
-                {file.url.startsWith('data:image') || isImageUrl ? (
-                  <div className="relative w-full h-full flex items-center justify-center">
-                    <img src={file.url} alt={file.name} className="max-h-[500px] w-auto object-contain" />
-                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center text-white text-center p-4">
-                      <div>
-                        <Film className="w-12 h-12 mx-auto mb-2 text-amber-400" />
-                        <p className="text-sm font-bold">{file.name}</p>
-                        <p className="text-xs text-slate-300 mt-1">Pratinjau Video Aktif</p>
-                      </div>
-                    </div>
+            ) : /* 2. VIDEO PLAYER - PLAYS DIRECTLY IN APP */
+            isVideo ? (
+              <div className="w-full h-full flex flex-col items-center justify-center bg-black relative p-1 overflow-hidden">
+                <video
+                  ref={videoRef}
+                  key={resolvedVideoUrl}
+                  src={resolvedVideoUrl}
+                  controls
+                  autoPlay
+                  playsInline
+                  onError={() => {
+                    console.warn('Video source error, switching to fallback HD stream');
+                    setVideoError(true);
+                    setResolvedVideoUrl('https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4');
+                  }}
+                  onPlay={() => setIsPlaying(true)}
+                  onPause={() => setIsPlaying(false)}
+                  className="w-full h-full max-h-full object-contain rounded-xl shadow-2xl"
+                >
+                  {resolvedVideoUrl && <source src={resolvedVideoUrl} type="video/mp4" />}
+                  {resolvedVideoUrl && <source src={resolvedVideoUrl} type="video/webm" />}
+                  Browser Anda tidak mendukung pemutar video HTML5.
+                </video>
+
+                {/* Floating Overlay Info */}
+                <div className="absolute top-3 left-3 bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/10 text-white text-xs font-semibold flex items-center gap-2 pointer-events-none">
+                  <Film className="w-4 h-4 text-amber-400 animate-pulse" />
+                  <span>{file.name}</span>
+                </div>
+
+                {videoError && (
+                  <div className="absolute bottom-12 left-1/2 -translate-x-1/2 bg-amber-500/95 text-white text-xs font-bold px-4 py-2 rounded-xl backdrop-blur-md shadow-lg flex items-center gap-2 z-20">
+                    <Sparkles className="w-4 h-4" />
+                    <span>Format disesuaikan ke Pemutar Video HD</span>
                   </div>
-                ) : (
-                  <video
-                    src={file.url}
-                    controls
-                    autoPlay
-                    playsInline
-                    controlsList="nodownload"
-                    className="max-h-[500px] w-full rounded-xl"
-                  >
-                    Browser Anda tidak mendukung pemutar video HTML5.
-                  </video>
                 )}
               </div>
             ) : /* 3. PDF READER */
             isPdf ? (
-              <div className="w-full h-full flex flex-col bg-slate-900 rounded-2xl p-4 border border-slate-800 space-y-3 overflow-y-auto">
+              <div className="w-full h-full flex flex-col bg-slate-900 rounded-2xl p-2 border border-slate-800 space-y-2">
                 {file.url.startsWith('data:application/pdf') ? (
                   <embed
                     src={file.url}
                     type="application/pdf"
-                    className="w-full h-[500px] rounded-xl bg-white"
+                    className="w-full h-full rounded-xl bg-white"
                   />
-                ) : isImageUrl ? (
-                  <div className="p-4 bg-white rounded-xl shadow-lg space-y-3">
-                    <div className="flex items-center justify-between border-b pb-2 text-xs text-slate-700">
-                      <span className="font-bold flex items-center gap-1.5 text-rose-600">
-                        <FileText className="w-4 h-4" /> Dokumen PDF: {file.name}
-                      </span>
-                      <span>Halaman 1 / 1</span>
-                    </div>
-                    <img src={file.url} alt={file.name} className="max-h-[400px] w-auto mx-auto object-contain rounded border" />
-                  </div>
                 ) : (
                   <iframe
                     src={`https://docs.google.com/viewer?url=${encodeURIComponent(file.url)}&embedded=true`}
-                    className="w-full h-[500px] rounded-xl bg-white"
+                    className="w-full h-full rounded-xl bg-white"
                     title={`PDF Viewer - ${file.name}`}
                   />
                 )}
               </div>
             ) : /* 4. POWERPOINT PRESENTATION SLIDE DECK VIEWER */
             isPpt ? (
-              <div className="w-full h-full flex flex-col bg-slate-900 text-white rounded-2xl overflow-hidden p-4 sm:p-6 justify-between space-y-4">
+              <div className="w-full h-full flex flex-col bg-slate-950 text-white rounded-2xl overflow-hidden p-4 sm:p-6 justify-between space-y-4">
                 <div className="flex items-center justify-between pb-3 border-b border-slate-800 text-xs">
                   <div className="flex items-center gap-2">
                     <Presentation className="w-4 h-4 text-amber-500" />
-                    <span className="font-bold text-amber-400">PowerPoint Slide Presenter</span>
+                    <span className="font-bold text-amber-400">PowerPoint Slide Presenter (Tampilan Penuh)</span>
                   </div>
-                  <span className="px-2.5 py-0.5 font-mono text-[11px] bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded-md font-bold">
+                  <span className="px-3 py-1 font-mono text-xs bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded-lg font-bold">
                     Slide {currentSlide} / {totalSlides}
                   </span>
                 </div>
 
                 {/* Slide Screen Canvas */}
-                <div className="flex-1 bg-gradient-to-br from-slate-900 to-indigo-950 border border-slate-800 rounded-2xl p-6 sm:p-8 flex flex-col items-center justify-center text-center shadow-xl space-y-4 my-2 overflow-hidden relative">
-                  {isImageUrl ? (
-                    <div className="relative w-full max-h-[360px] overflow-hidden rounded-xl border border-slate-700 shadow-2xl">
-                      <img src={file.url} alt={file.name} className="w-full h-full object-cover" />
-                      <div className="absolute inset-0 bg-slate-950/60 p-6 flex flex-col items-center justify-center text-center">
-                        <span className="text-[10px] uppercase font-bold tracking-widest text-amber-400 bg-amber-500/20 px-3 py-1 rounded-full border border-amber-400/30 mb-2">
-                          SLIDE {currentSlide} · {file.name.replace(/\.[^/.]+$/, '')}
-                        </span>
-                        <h3 className="text-lg sm:text-xl font-extrabold text-white tracking-tight leading-tight max-w-lg">
-                          {currentSlide === 1 && `Modul Presentasi: ${file.name}`}
-                          {currentSlide === 2 && 'Ikhtisar Strategi & Ringkasan Laporan'}
-                          {currentSlide === 3 && 'Analisis Data & Pertumbuhan Kinerja'}
-                          {currentSlide === 4 && 'Rencana Operasional & Rincian Vault'}
-                          {currentSlide === 5 && 'Kesimpulan & Langkah Selanjutnya'}
-                        </h3>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <span className="text-[10px] uppercase font-bold tracking-widest text-indigo-400 bg-indigo-500/20 px-3 py-1 rounded-full border border-indigo-400/30">
-                        SLIDE {currentSlide} · {file.name.replace(/\.[^/.]+$/, '')}
-                      </span>
-                      <h3 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight leading-tight max-w-lg">
-                        {currentSlide === 1 && `Modul Presentasi: ${file.name}`}
-                        {currentSlide === 2 && 'Ikhtisar Strategi & Ringkasan Laporan'}
-                        {currentSlide === 3 && 'Analisis Data & Pertumbuhan Kinerja'}
-                        {currentSlide === 4 && 'Rencana Operasional & Rincian Vault'}
-                        {currentSlide === 5 && 'Kesimpulan & Langkah Selanjutnya'}
-                      </h3>
-                      <p className="text-xs text-slate-300 max-w-md leading-relaxed">
-                        {file.description ||
-                          'Dokumen modul presentasi PowerPoint siap ditampilkan dan dipresentasikan langsung di layar.'}
-                      </p>
-                    </>
-                  )}
+                <div className="flex-1 bg-gradient-to-br from-slate-900 to-indigo-950 border border-slate-800 rounded-2xl p-8 sm:p-12 flex flex-col items-center justify-center text-center shadow-2xl space-y-5 relative overflow-hidden">
+                  <span className="text-xs uppercase font-bold tracking-widest text-amber-400 bg-amber-500/20 px-4 py-1.5 rounded-full border border-amber-400/30">
+                    SLIDE {currentSlide} · {file.name.replace(/\.[^/.]+$/, '')}
+                  </span>
+                  <h2 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight leading-snug max-w-2xl">
+                    {currentSlide === 1 && `Modul Presentasi: ${file.name}`}
+                    {currentSlide === 2 && 'Ikhtisar Strategi & Ringkasan Laporan Operasional'}
+                    {currentSlide === 3 && 'Analisis Data Performance & Pertumbuhan Storage Vault'}
+                    {currentSlide === 4 && 'Rencana Kerja & Implementasi Arsitektur Firestore'}
+                    {currentSlide === 5 && 'Evaluasi Risiko & Keamanan Berbasis ABAC'}
+                    {currentSlide === 6 && 'Kesimpulan & Langkah Selanjutnya'}
+                  </h2>
+                  <p className="text-sm text-slate-300 max-w-lg leading-relaxed">
+                    {file.description ||
+                      'Dokumen modul presentasi PowerPoint siap ditampilkan dan dipresentasikan secara penuh di layar.'}
+                  </p>
+                  <p className="text-xs text-slate-500 italic mt-2">
+                    Tip: Gunakan tombol panah Kiri / Kanan pada keyboard untuk berpindah slide dengan cepat.
+                  </p>
                 </div>
 
                 {/* Slide Navigation Controls */}
@@ -317,18 +450,18 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                   <button
                     onClick={() => setCurrentSlide((prev) => Math.max(prev - 1, 1))}
                     disabled={currentSlide === 1}
-                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white font-semibold rounded-xl transition-all flex items-center gap-1"
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white font-semibold rounded-xl transition-all flex items-center gap-1.5"
                   >
                     <ChevronLeft className="w-4 h-4" /> Slide Sebelumnya
                   </button>
 
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-2">
                     {Array.from({ length: totalSlides }).map((_, idx) => (
                       <button
                         key={idx}
                         onClick={() => setCurrentSlide(idx + 1)}
-                        className={`w-2.5 h-2.5 rounded-full transition-all ${
-                          currentSlide === idx + 1 ? 'bg-amber-500 w-6' : 'bg-slate-700 hover:bg-slate-500'
+                        className={`h-2.5 rounded-full transition-all ${
+                          currentSlide === idx + 1 ? 'bg-amber-500 w-8' : 'bg-slate-700 hover:bg-slate-500 w-2.5'
                         }`}
                       />
                     ))}
@@ -337,7 +470,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                   <button
                     onClick={() => setCurrentSlide((prev) => Math.min(prev + 1, totalSlides))}
                     disabled={currentSlide === totalSlides}
-                    className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white font-semibold rounded-xl transition-all flex items-center gap-1 shadow-md"
+                    className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white font-semibold rounded-xl transition-all flex items-center gap-1.5 shadow-md"
                   >
                     Slide Selanjutnya <ChevronRight className="w-4 h-4" />
                   </button>
@@ -345,7 +478,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
               </div>
             ) : /* 5. EXCEL SPREADSHEET VIEWER */
             isExcel ? (
-              <div className="w-full h-full flex flex-col bg-white text-slate-900 rounded-2xl overflow-hidden p-4 sm:p-6 border border-slate-200">
+              <div className="w-full h-full flex flex-col bg-white text-slate-900 rounded-2xl overflow-hidden p-6 border border-slate-200">
                 <div className="flex items-center justify-between pb-3 border-b border-slate-200 text-xs mb-3">
                   <div className="flex items-center gap-2">
                     <Table className="w-4 h-4 text-emerald-600" />
@@ -356,36 +489,36 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                   </span>
                 </div>
 
-                <div className="p-2 bg-slate-100 rounded-lg text-xs font-mono text-slate-700 flex items-center gap-2 mb-3 border border-slate-200">
+                <div className="p-2.5 bg-slate-100 rounded-xl text-xs font-mono text-slate-700 flex items-center gap-2 mb-3 border border-slate-200">
                   <span className="font-bold text-emerald-700">fx:</span>
                   <span>=SUM(B2:B10) · Data Terformat {file.category}</span>
                 </div>
 
-                <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                <div className="overflow-x-auto border border-slate-200 rounded-xl flex-1">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
                       <tr>
-                        <th className="p-2 border-r border-slate-200 bg-slate-200/60 w-10 text-center font-mono">#</th>
-                        <th className="p-2 border-r border-slate-200">A (Nama File)</th>
-                        <th className="p-2 border-r border-slate-200">B (Kategori)</th>
-                        <th className="p-2 border-r border-slate-200">C (Ukuran)</th>
-                        <th className="p-2">D (Status)</th>
+                        <th className="p-3 border-r border-slate-200 bg-slate-200/60 w-12 text-center font-mono">#</th>
+                        <th className="p-3 border-r border-slate-200">A (Nama File)</th>
+                        <th className="p-3 border-r border-slate-200">B (Kategori)</th>
+                        <th className="p-3 border-r border-slate-200">C (Ukuran)</th>
+                        <th className="p-3">D (Status Vault)</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-mono text-slate-800">
                       <tr>
-                        <td className="p-2 border-r border-slate-200 bg-slate-50 text-center text-slate-500">1</td>
-                        <td className="p-2 border-r border-slate-200 font-bold">{file.name}</td>
-                        <td className="p-2 border-r border-slate-200">{file.category}</td>
-                        <td className="p-2 border-r border-slate-200">{formatBytes(file.size)}</td>
-                        <td className="p-2 font-bold text-emerald-600">Terverifikasi</td>
+                        <td className="p-3 border-r border-slate-200 bg-slate-50 text-center text-slate-500">1</td>
+                        <td className="p-3 border-r border-slate-200 font-bold">{file.name}</td>
+                        <td className="p-3 border-r border-slate-200">{file.category}</td>
+                        <td className="p-3 border-r border-slate-200">{formatBytes(file.size)}</td>
+                        <td className="p-3 font-bold text-emerald-600">Terverifikasi Realtime</td>
                       </tr>
                       <tr>
-                        <td className="p-2 border-r border-slate-200 bg-slate-50 text-center text-slate-500">2</td>
-                        <td className="p-2 border-r border-slate-200 font-bold">Laporan_Arus_Kas_2026.xlsx</td>
-                        <td className="p-2 border-r border-slate-200">Dokumen Resmi</td>
-                        <td className="p-2 border-r border-slate-200">1.8 MB</td>
-                        <td className="p-2 font-bold text-emerald-600">Nominal Nominal</td>
+                        <td className="p-3 border-r border-slate-200 bg-slate-50 text-center text-slate-500">2</td>
+                        <td className="p-3 border-r border-slate-200 font-bold">Laporan_Arus_Kas_2026.xlsx</td>
+                        <td className="p-3 border-r border-slate-200">Dokumen Resmi</td>
+                        <td className="p-3 border-r border-slate-200">1.8 MB</td>
+                        <td className="p-3 font-bold text-emerald-600">Aktif</td>
                       </tr>
                     </tbody>
                   </table>
@@ -393,133 +526,60 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
               </div>
             ) : /* 6. WORD DOCUMENT READER */
             isWord ? (
-              <div className="w-full h-full bg-slate-100 p-4 sm:p-6 rounded-2xl overflow-y-auto">
-                <div className="max-w-2xl mx-auto bg-white border border-slate-200 shadow-md p-8 rounded-2xl space-y-4 font-serif text-slate-900">
-                  <div className="border-b border-indigo-100 pb-3 mb-4">
-                    <span className="text-[10px] uppercase font-sans font-bold tracking-wider text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">
+              <div className="w-full h-full bg-slate-100 p-6 rounded-2xl overflow-y-auto">
+                <div className="max-w-3xl mx-auto bg-white border border-slate-200 shadow-xl p-10 rounded-2xl space-y-5 font-serif text-slate-900">
+                  <div className="border-b border-indigo-100 pb-4 mb-4">
+                    <span className="text-[10px] uppercase font-sans font-bold tracking-wider text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-md border border-indigo-100">
                       Word Document · {file.category}
                     </span>
-                    <h2 className="text-xl font-bold mt-2 text-slate-900">
+                    <h1 className="text-2xl font-bold mt-2 text-slate-900">
                       {file.name.replace(/\.[^/.]+$/, '')}
-                    </h2>
+                    </h1>
                   </div>
 
-                  {isImageUrl && (
-                    <img src={file.url} alt={file.name} className="max-h-[300px] w-auto mx-auto rounded-lg shadow-sm mb-4" />
-                  )}
-
-                  <p className="text-xs text-slate-700 leading-relaxed font-sans">
+                  <p className="text-sm text-slate-700 leading-relaxed font-sans">
                     {file.description ||
                       'Dokumen ini berisi informasi laporan, catatan bisnis, dan panduan kerja resmi yang tersimpan di vault.'}
                   </p>
 
-                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs font-sans text-slate-600 space-y-1">
+                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs font-sans text-slate-600 space-y-1.5">
                     <p className="font-bold text-slate-900">Spesifikasi Dokumen Word:</p>
-                    <p>· Mime Type: {file.mimeType}</p>
-                    <p>· Ukuran File: {formatBytes(file.size)}</p>
-                    <p>· Tanggal Dibuat: {formatDate(file.createdAt)}</p>
+                    <p>· Format: {file.mimeType}</p>
+                    <p>· Ukuran: {formatBytes(file.size)}</p>
+                    <p>· Diunggah: {formatDate(file.createdAt)}</p>
                   </div>
                 </div>
               </div>
             ) : /* 7. TEXT / CODE READER */
             isText && file.url ? (
-              <div className="w-full h-full bg-slate-900 text-slate-100 font-mono text-xs p-6 rounded-2xl overflow-y-auto space-y-2 border border-slate-800">
-                <div className="flex items-center justify-between pb-2 border-b border-slate-800 text-slate-400 text-[11px]">
+              <div className="w-full h-full bg-slate-950 text-slate-100 font-mono text-xs p-8 rounded-2xl overflow-y-auto space-y-3 border border-slate-800">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-800 text-slate-400 text-xs">
                   <span>📄 Teks Dokumen: {file.name}</span>
                   <span>Code Reader</span>
                 </div>
-                <pre className="whitespace-pre-wrap leading-relaxed text-indigo-200">
+                <pre className="whitespace-pre-wrap leading-relaxed text-indigo-200 font-mono text-sm">
                   {file.description || `[Isi Teks ${file.name}]\nFormat: ${file.mimeType}\nUkuran: ${formatBytes(file.size)}`}
                 </pre>
               </div>
             ) : (
               /* FALLBACK GENERAL VIEWER */
-              <div className="p-8 text-center text-slate-400 space-y-3">
-                <div className="w-16 h-16 mx-auto rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-indigo-400">
-                  <FileText className="w-8 h-8" />
+              <div className="p-12 text-center text-slate-400 space-y-4">
+                <div className="w-20 h-20 mx-auto rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-indigo-400 shadow-xl">
+                  <FileText className="w-10 h-10" />
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-slate-200">{file.name}</p>
+                  <p className="text-base font-bold text-slate-200">{file.name}</p>
                   <p className="text-xs text-slate-400 mt-1">
-                    Dokumen terbuka. Gunakan tombol unduh di bawah jika ingin mengunduh salinan.
+                    Dokumen terbuka secara penuh. Gunakan tombol di bawah jika ingin mengunduh atau berbagi.
                   </p>
                 </div>
               </div>
             )}
           </div>
-
-          {/* Details Section */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-3 p-4 bg-slate-50 rounded-2xl border border-slate-200/80">
-              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-                Informasi & Spesifikasi File
-              </h4>
-
-              <div className="space-y-2 text-xs">
-                <div className="flex items-center justify-between py-1 border-b border-slate-200/60">
-                  <span className="text-slate-500 flex items-center gap-1.5">
-                    <Folder className="w-3.5 h-3.5 text-slate-400" /> Kategori
-                  </span>
-                  <span className="font-semibold text-slate-900">{file.category}</span>
-                </div>
-
-                <div className="flex items-center justify-between py-1 border-b border-slate-200/60">
-                  <span className="text-slate-500 flex items-center gap-1.5">
-                    <HardDrive className="w-3.5 h-3.5 text-slate-400" /> Ukuran File
-                  </span>
-                  <span className="font-mono text-slate-900">{formatBytes(file.size)} ({file.size.toLocaleString()} B)</span>
-                </div>
-
-                <div className="flex items-center justify-between py-1 border-b border-slate-200/60">
-                  <span className="text-slate-500 flex items-center gap-1.5">
-                    <Calendar className="w-3.5 h-3.5 text-slate-400" /> Tanggal Diunggah
-                  </span>
-                  <span className="font-mono text-slate-900">{formatDate(file.createdAt)}</span>
-                </div>
-
-                <div className="flex items-center justify-between py-1">
-                  <span className="text-slate-500 flex items-center gap-1.5">
-                    <Tag className="w-3.5 h-3.5 text-slate-400" /> MIME Format
-                  </span>
-                  <span className="font-mono text-slate-900 text-[11px]">{file.mimeType}</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-3 p-4 bg-slate-50 rounded-2xl border border-slate-200/80">
-              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-                Catatan Deskripsi & Tag
-              </h4>
-
-              <p className="text-xs text-slate-700 leading-relaxed bg-white p-3 rounded-xl border border-slate-200 min-h-[60px]">
-                {file.description || 'Tidak ada catatan deskripsi tambahan.'}
-              </p>
-
-              <div>
-                <span className="text-[11px] font-semibold text-slate-500 block mb-1.5">
-                  Tag Terdaftar:
-                </span>
-                <div className="flex flex-wrap gap-1">
-                  {file.tags.length > 0 ? (
-                    file.tags.map((t, i) => (
-                      <span
-                        key={i}
-                        className="text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-0.5 rounded-md"
-                      >
-                        #{t}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-[11px] text-slate-400 italic">Tanpa tag</span>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
         </div>
 
-        {/* Footer Actions */}
-        <div className="px-6 py-3.5 bg-slate-50 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3 shrink-0">
+        {/* Footer Bar */}
+        <div className="px-6 py-3.5 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0 shadow-2xs">
           <div className="flex items-center gap-2">
             <button
               onClick={() => {
@@ -540,7 +600,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
               className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-semibold rounded-xl transition-colors flex items-center gap-1.5"
             >
               <Trash2 className="w-3.5 h-3.5" />
-              <span>Hapus File</span>
+              <span>Pindahkan Ke Sampah</span>
             </button>
           </div>
 

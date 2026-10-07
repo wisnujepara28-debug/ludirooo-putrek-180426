@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { FileType } from '../types/storage';
 import { validateFileInput, inferFileType, formatBytes } from '../lib/formatters';
-import { processLocalPhoto, processLocalVideoThumbnail, readDocumentDataUrl, registerLocalFileBlob } from '../lib/mediaProcessor';
+import { processLocalPhoto, readDocumentDataUrl, registerLocalFileBlob, saveLocalVideoToIndexedDb } from '../lib/mediaProcessor';
 import {
   Upload,
   X,
@@ -147,16 +147,23 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onUpl
     }
     // 2. Process Video
     else if (inferred === 'video') {
-      setStatusMessage('Mengambil poster frame dari video...');
+      setStatusMessage('Menyiapkan file video untuk diputar langsung...');
       try {
-        const { posterUrl, streamUrl } = await processLocalVideoThumbnail(file);
-        // Use poster Data URL if extracted or streamUrl
-        setFileUrl(posterUrl || streamUrl);
+        const fileKey = `video_${Date.now()}_${file.name.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        await saveLocalVideoToIndexedDb(fileKey, file);
+        const objectUrl = registerLocalFileBlob(fileKey, file);
+
+        if (file.size < 600000) {
+          const dataUrl = await readDocumentDataUrl(file);
+          setFileUrl(dataUrl);
+        } else {
+          setFileUrl(objectUrl);
+        }
       } catch (err) {
-        console.warn('Video thumbnail processing fallback:', err);
-        const dataUrl = await readDocumentDataUrl(file);
-        setFileUrl(dataUrl);
-      } fontFinally: {
+        console.warn('Video Data URL processing notice:', err);
+        const objectUrl = registerLocalFileBlob(tempId, file);
+        setFileUrl(objectUrl);
+      } finally {
         setStatusMessage(null);
       }
     }

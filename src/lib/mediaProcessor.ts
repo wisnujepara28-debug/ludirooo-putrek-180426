@@ -1,26 +1,87 @@
 /**
- * Media Processor for local uploads:
+ * Media Processor for local uploads & persistence:
  * 1. Image Compressor: Converts uploaded photos into embedded JPEG Data URLs (~50KB-120KB).
- * 2. Video Thumbnail Extractor: Seeks into uploaded video files and captures the 1st frame on Canvas as a Data URL poster!
+ * 2. Video Blob Registry & IndexedDB Manager: Persists local video File blobs across reloads.
  * 3. Document Data URL Reader: Reads PDFs, TXT, CSV, and Office files into Data URLs.
- * 4. Blob Session Registry: Maintains active local File objects in memory for instant 60fps playback/rendering in the browser session.
  */
 
 // In-memory session registry for local File blobs
 const fileBlobRegistry = new Map<string, { file: File; objectUrl: string }>();
 
-export function registerLocalFileBlob(fileId: string, file: File): string {
-  const existing = fileBlobRegistry.get(fileId);
+export function registerLocalFileBlob(fileKey: string, file: File): string {
+  const existing = fileBlobRegistry.get(fileKey);
   if (existing) {
     return existing.objectUrl;
   }
   const objectUrl = URL.createObjectURL(file);
-  fileBlobRegistry.set(fileId, { file, objectUrl });
+  fileBlobRegistry.set(fileKey, { file, objectUrl });
   return objectUrl;
 }
 
-export function getLocalFileBlobUrl(fileId: string): string | null {
-  return fileBlobRegistry.get(fileId)?.objectUrl || null;
+export function getLocalFileBlobUrl(fileKey: string): string | null {
+  const reg = fileBlobRegistry.get(fileKey);
+  if (reg) return reg.objectUrl;
+
+  // Search by substring key
+  for (const [key, val] of fileBlobRegistry.entries()) {
+    if (fileKey.includes(key) || key.includes(fileKey)) {
+      return val.objectUrl;
+    }
+  }
+  return null;
+}
+
+// IndexedDB for local video blob persistence
+const DB_NAME = 'putrek_file_vault';
+const STORE_NAME = 'media_blobs';
+
+function openBlobDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function saveLocalVideoToIndexedDb(fileKey: string, file: File): Promise<void> {
+  try {
+    const db = await openBlobDb();
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    tx.objectStore(STORE_NAME).put(file, fileKey);
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn('IndexedDB save notice:', err);
+  }
+}
+
+export async function getLocalVideoFromIndexedDb(fileKey: string): Promise<string | null> {
+  try {
+    const db = await openBlobDb();
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const req = tx.objectStore(STORE_NAME).get(fileKey);
+    return new Promise((resolve) => {
+      req.onsuccess = () => {
+        if (req.result instanceof Blob) {
+          const objectUrl = URL.createObjectURL(req.result);
+          resolve(objectUrl);
+        } else {
+          resolve(null);
+        }
+      };
+      req.onerror = () => resolve(null);
+    });
+  } catch (err) {
+    return null;
+  }
 }
 
 /**
@@ -80,47 +141,6 @@ export async function processLocalPhoto(file: File): Promise<string> {
     };
 
     img.src = objectUrl;
-  });
-}
-
-/**
- * Extracts a thumbnail poster frame from a local Video file using HTML5 Video + Canvas
- */
-export async function processLocalVideoThumbnail(file: File): Promise<{ posterUrl: string; streamUrl: string }> {
-  return new Promise((resolve) => {
-    const videoUrl = URL.createObjectURL(file);
-    const video = document.createElement('video');
-    video.src = videoUrl;
-    video.muted = true;
-    video.currentTime = 1; // Seek to 1 second for thumbnail frame
-
-    video.onloadeddata = () => {
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.min(video.videoWidth || 640, 640);
-        canvas.height = Math.min(video.videoHeight || 360, 360);
-
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const posterUrl = canvas.toDataURL('image/jpeg', 0.7);
-          resolve({ posterUrl, streamUrl: videoUrl });
-          return;
-        }
-      } catch (e) {
-        console.warn('Video canvas thumbnail extraction notice:', e);
-      }
-      resolve({ posterUrl: '', streamUrl: videoUrl });
-    };
-
-    video.onerror = () => {
-      resolve({ posterUrl: '', streamUrl: videoUrl });
-    };
-
-    // Timeout fallback after 2s if video loading takes too long
-    setTimeout(() => {
-      resolve({ posterUrl: '', streamUrl: videoUrl });
-    }, 2000);
   });
 }
 
