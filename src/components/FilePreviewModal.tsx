@@ -60,7 +60,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [rotation, setRotate] = useState<number>(0);
   const [fitMode, setFitMode] = useState<'contain' | 'cover'>('contain');
-  const [isFullscreen, setIsFullscreen] = useState<boolean>(true);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
 
   // Video State & Controls
   const videoRef = useRef<HTMLVideoElement | null>(null);
