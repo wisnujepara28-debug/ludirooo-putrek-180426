@@ -1,0 +1,6 @@
+{
+  "name": "PUTREK FILE - Personal Media & Storage Vault",
+  "description": "Sistem penyimpanan data cloud pribadi PUTREK FILE untuk file, dokumen, foto, dan video dengan kapasitas 1000 TB, otentikasi admin LUDIRO & PUTRI, serta integrasi Firebase Firestore.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

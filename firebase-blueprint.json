@@ -1,0 +1,96 @@
+{
+  "entities": {
+    "fileItem": {
+      "title": "FileItem",
+      "description": "Represents a stored file, document, photo, video, or archive in the storage vault.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "type": {
+          "type": "string",
+          "enum": ["document", "photo", "video", "archive", "other"]
+        },
+        "mimeType": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "size": {
+          "type": "number"
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 2000000
+        },
+        "category": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "tags": {
+          "type": "array"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "isFavorite": {
+          "type": "boolean"
+        },
+        "inTrash": {
+          "type": "boolean"
+        },
+        "ownerId": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": ["name", "type", "size", "url", "ownerId", "createdAt", "updatedAt"]
+    },
+    "userProfile": {
+      "title": "UserProfile",
+      "description": "User profile information and admin metadata.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin"]
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": ["uid", "username", "role"]
+    }
+  },
+  "firestore": {
+    "/files/{fileId}": {
+      "schema": "fileItem",
+      "description": "Global storage collection for uploaded files, documents, photos, and videos."
+    },
+    "/users/{userId}": {
+      "schema": "userProfile",
+      "description": "User profile document containing authentication and admin details."
+    }
+  }
+}
